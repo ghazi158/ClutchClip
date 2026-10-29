@@ -6,10 +6,11 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QKeySequence, QPalette
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPalette
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
@@ -25,6 +26,7 @@ VIDEO_EXT = (".mkv", ".mp4", ".mov", ".flv", ".avi", ".webm")
 AUDIO_EXT = (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus")
 SHORTCUTS_FILE = os.path.join(ae.APP_DIR, "shortcuts.json")
 MOMENTS_FILE = os.path.join(ae.APP_DIR, "moments.json")
+LOG_FILE = os.path.join(ae.APP_DIR, "clutchclip.log")
 FRAME = 1 / 60
 
 QSS = """
@@ -229,7 +231,9 @@ def in_thread(fn, on_progress, on_done, on_fail):
         try:
             b.done.emit(fn(b.progress.emit))
         except Exception as e:
-            b.failed.emit(str(e))
+            with open(LOG_FILE, "a") as f:  # a windowed .exe has no console, so keep the traceback for bug reports
+                f.write(f"{time.ctime()}\n{traceback.format_exc()}\n")
+            b.failed.emit(f"{e}\n\nDetails were saved to {LOG_FILE}")
     threading.Thread(target=work, daemon=True).start()
     return b  # caller keeps a reference so the signals stay alive
 
@@ -1096,7 +1100,11 @@ def dark_palette(app):
 
 
 def main():
+    if os.name == "nt":  # own taskbar icon/grouping instead of python's
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ClutchClip.App")
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(os.path.join(ae.RES, "assets", "logo.png")))
     dark_palette(app)
     win = Editor()
     win.show()

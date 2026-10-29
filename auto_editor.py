@@ -61,27 +61,39 @@ MOMENT_MERGE_GAP = 10  # detections closer than this are one moment (a round int
 FRAME_W, FRAME_H = 398, 224  # 16:9; CLIP's preprocess center-crops to the crosshair area
 MERGE_GAP, MIN_LEN, PAD_BEFORE, PAD_AFTER, SMOOTH = 8, 5, 3, 3, 5  # seconds
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-# per-user state (cache, settings, trained model, training videos); CLUTCHCLIP_HOME overrides it
+RES = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))  # bundled ffmpeg/weights/logo when frozen
+CLIP_WEIGHTS = os.path.join(RES, "model", "open_clip_model.safetensors")
+# per-user state (cache, settings); CLUTCHCLIP_HOME overrides it
 APP_DIR = os.environ.get("CLUTCHCLIP_HOME") or os.path.join(
     os.environ.get("APPDATA") or os.path.expanduser("~/.local/share"), "ClutchClip")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
-TRAIN_DIR = os.path.join(APP_DIR, "training")
-STYLE_MODEL = os.path.join(APP_DIR, "style_model.npz")
 os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(TRAIN_DIR, exist_ok=True)
 
 
 def find_tool(name):
-    # winget updates PATH only for new shells, so fall back to its install folder
-    path = shutil.which(name) or next(iter(glob.glob(os.path.expandvars(
+    # bundled copy first; winget updates PATH only for new shells, so fall back to its install folder
+    bundled = os.path.join(RES, "ffmpeg", f"{name}.exe")
+    path = (bundled if os.path.exists(bundled) else None) or shutil.which(name) or next(iter(glob.glob(os.path.expandvars(
         rf"%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*\*\bin\{name}.exe"))), None)
     if not path:
         raise RuntimeError(f"{name} not found. Install it with: winget install Gyan.FFmpeg")
     return path
 
 
+class FFmpegError(subprocess.CalledProcessError):
+    """Still a CalledProcessError (callers fall back on it), but the message says what ffmpeg complained about."""
+
+    def __str__(self):
+        return f"{os.path.basename(self.cmd[0])} failed: {(self.stderr or b'').decode(errors='replace')[-500:].strip()}"
+
+
 def run(args, **kw):
-    return subprocess.run(args, check=True, capture_output=True, creationflags=NO_WINDOW, **kw)
+    # stdin=DEVNULL: a windowed .exe has no console stdin to inherit, which makes Popen fail with "invalid handle"
+    try:
+        return subprocess.run(args, check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                              creationflags=NO_WINDOW, **kw)
+    except subprocess.CalledProcessError as e:
+        raise FFmpegError(e.returncode, e.cmd, e.output, e.stderr) from None
 
 
 def duration_of(video):
@@ -120,7 +132,7 @@ def audio_scores(video, seconds):
 def load_clip():
     import open_clip
     model, _, preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32", pretrained="laion2b_s34b_b79k")
+        "ViT-B-32", pretrained=CLIP_WEIGHTS if os.path.exists(CLIP_WEIGHTS) else "laion2b_s34b_b79k")
     return model.eval(), preprocess
 
 
@@ -140,7 +152,7 @@ def scan(video, progress=lambda p: None):
             [find_tool("ffmpeg"), "-v", "error", "-hwaccel", "d3d11va",
              "-i", video, "-map", "0:v:0", "-vf", f"fps=1,scale={FRAME_W}:{FRAME_H}", "-f", "rawvideo",
              "-pix_fmt", "rgb24", "pipe:1", "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-f", "s16le", audio_raw],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
         frames = queue.Queue(maxsize=256)  # reader thread keeps the disk busy while CLIP runs
 
         def reader():
@@ -184,19 +196,15 @@ def clip_embeddings(video, progress=lambda p: None):
 
 def vision_scores(video, seconds, progress):
     emb = clip_embeddings(video, progress)
-    if os.path.exists(STYLE_MODEL):
-        m = np.load(STYLE_MODEL)
-        s = 1 / (1 + np.exp(-(emb @ m["w"] + m["b"])))
-    else:
-        import open_clip
-        import torch
-        model, _ = load_clip()
-        with torch.no_grad():
-            text = model.encode_text(open_clip.get_tokenizer("ViT-B-32")(FIGHT_PROMPTS + BORING_PROMPTS))
-        text = (text / text.norm(dim=-1, keepdim=True)).numpy()
-        logits = 100 * emb @ text.T
-        probs = np.exp(logits - logits.max(axis=1, keepdims=True))
-        s = probs[:, : len(FIGHT_PROMPTS)].sum(axis=1) / probs.sum(axis=1)
+    import open_clip
+    import torch
+    model, _ = load_clip()
+    with torch.no_grad():
+        text = model.encode_text(open_clip.get_tokenizer("ViT-B-32")(FIGHT_PROMPTS + BORING_PROMPTS))
+    text = (text / text.norm(dim=-1, keepdim=True)).numpy()
+    logits = 100 * emb @ text.T
+    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+    s = probs[:, : len(FIGHT_PROMPTS)].sum(axis=1) / probs.sum(axis=1)
     return np.concatenate([s, np.zeros(seconds)])[:seconds]
 
 
@@ -288,43 +296,6 @@ def ai_ranges(video, score, duration, keep_percent, moments, fights=True):
     return [(s, e, " + ".join(sorted(lb))) for s, e, lb in union(ranges)], found
 
 
-def fit_logreg(X, y, l2=1e-3, steps=2000, lr=2.0):
-    """Class-balanced logistic regression by plain gradient descent."""
-    sw = np.where(y == 1, 0.5 / y.mean(), 0.5 / (1 - y.mean()))
-    w, b = np.zeros(X.shape[1]), 0.0
-    for _ in range(steps):
-        p = 1 / (1 + np.exp(-(X @ w + b)))
-        g = sw * (p - y) / len(y)
-        w -= lr * (X.T @ g + l2 * w)
-        b -= lr * g.sum()
-    return w, b
-
-
-def train(raw_videos, log=print):
-    """Edited videos (folder) = what you keep; raw recordings = typical footage."""
-    edited = sorted(glob.glob(os.path.join(TRAIN_DIR, "*.*")))
-    if not edited or not raw_videos:
-        raise RuntimeError(f"Need edited videos in '{TRAIN_DIR}' and at least one raw recording.")
-    pos, neg = [], []
-    for v, dest in [(v, pos) for v in edited] + [(v, neg) for v in raw_videos]:
-        log(f"Reading {os.path.basename(v)} (cached after the first time)...")
-        dest.append(clip_embeddings(v, lambda p: print(f"\r  {p:.0%}", end="")))
-        print()
-    X, y = np.concatenate(pos + neg), np.r_[np.ones(sum(map(len, pos))), np.zeros(sum(map(len, neg)))]
-
-    # honesty check: hold out every 5th minute (neighbouring seconds look alike)
-    test = (np.concatenate([np.arange(len(e)) for e in pos + neg]) // 60) % 5 == 0
-    w, b = fit_logreg(X[~test], y[~test])
-    s = X[test] @ w + b
-    auc = (s[y[test] == 1][:, None] > s[y[test] == 0][None, :]).mean()
-    log(f"Held-out check: kept-vs-raw ranking accuracy {auc:.0%} (50% = coin flip). "
-        "Raw also contains moments you'd keep, so 100% is not expected.")
-
-    w, b = fit_logreg(X, y)
-    np.savez(STYLE_MODEL, w=w, b=b)
-    log(f"Saved style model to {STYLE_MODEL}")
-
-
 def find_segments(keep, duration):
     """Boolean per-second mask -> padded (start, end) pairs in seconds."""
     runs, start = [], None
@@ -354,8 +325,7 @@ def find_segments(keep, duration):
 
 def analyze(video, progress=lambda p: None):
     """Smoothed per-second AI keep score (~0..1) for the whole recording, cached in ./cache."""
-    style = os.path.getmtime(STYLE_MODEL) if os.path.exists(STYLE_MODEL) else 0
-    cache = os.path.join(CACHE_DIR, f"{os.path.basename(video)}_{os.path.getsize(video)}_{style:.0f}_score.npy")
+    cache = os.path.join(CACHE_DIR, f"{os.path.basename(video)}_{os.path.getsize(video)}_score.npy")
     if os.path.exists(cache):
         return np.load(cache)
     seconds = int(duration_of(video))
@@ -370,8 +340,7 @@ def analyze(video, progress=lambda p: None):
             scan(video, progress)
     audio = np.load(cache_path(video, "_audio"))
     vision = vision_scores(video, seconds, progress)
-    # ponytail: fixed weights; trained style leans on vision since edited audio may carry music/voiceover, so audio isn't learned
-    score = 0.3 * audio + 0.7 * vision if os.path.exists(STYLE_MODEL) else 0.5 * audio + 0.5 * vision
+    score = 0.5 * audio + 0.5 * vision
     score = np.convolve(score, np.ones(SMOOTH) / SMOOTH, mode="same")
     np.save(cache, score)
     return score
@@ -581,7 +550,5 @@ def selftest():
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
-    elif "--train" in sys.argv:
-        train([a for a in sys.argv[1:] if a != "--train"])
     else:
-        print("Run editor.py (or run.bat) to open the editor. Flags here: --selftest, --train <raw videos>")
+        print("Run editor.py (or run.bat) to open the editor. Flag here: --selftest")

@@ -5,3 +5,7 @@ __pycache__/
 *.autosave
 *.npy
 *.npz
+build_assets/
+build/
+dist/
+*.spec

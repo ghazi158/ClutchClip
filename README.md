@@ -1,22 +1,45 @@
 # ClutchClip
 
-AI-assisted video editor that turns a long gameplay recording into a highlight reel. Built around
-*The Finals* recordings, but the detection is prompt-based, so you can teach it other moments.
+<img src="assets/logo.png" width="96" align="right" alt="ClutchClip logo">
 
-- **Fight detection**: a CLIP model scores every second of video, combined with audio loudness/burstiness (gunfire).
-- **Moments**: tick extra things to keep (deaths, round starts, cashouts) or cut (menus, scoreboards), or add your
-  own by describing what's on screen in plain text.
-- **Timeline editor**: review AI suggestions, trim, split, reorder, add music with fades, then export.
-- **Learn your style** (optional): train a small model on videos you've already edited.
+Turn a long gameplay recording into a highlight reel. ClutchClip watches your footage, suggests the best parts,
+and lets you review, trim and export them. Built around *The Finals* recordings, but it works on any footage.
+
+## Install
+
+1. Download **ClutchClip-windows.zip** from the [Releases page](https://github.com/ghazi158/ClutchClip/releases).
+2. Right-click the zip → **Extract All**.
+3. Open the extracted **ClutchClip** folder and double-click **ClutchClip.exe**.
+
+That's it. There's nothing else to install and no internet connection is needed.
+
+> Windows may show a blue "Windows protected your PC" box the first time because the app isn't code-signed.
+> Click **More info → Run anyway**.
+
+## Use
+
+1. Drop a recording onto the window (or press **Ctrl+O**). OBS recordings (`.mkv`, `.mp4`) work well.
+2. Wait while the AI analyses it. The first time takes a while; reopening is instant.
+3. Review the suggested clips (hatched green). Press **A** to accept one, **Del** to remove one, or drag the edges to trim.
+4. **Add music** if you like, then click **Export**.
+
+Open **Moments** (right panel) to tell the AI to also keep deaths, round starts or cashouts, cut menus and scoreboards,
+or add your own by describing what appears on screen.
+
+Everything ClutchClip saves about you (analysis cache and settings) is in `%APPDATA%\ClutchClip`.
+Your projects (`.aeproj`) are saved wherever you choose.
 
 ## Requirements
 
-- Windows 10/11 (macOS/Linux are not supported yet: see [Known limitations](#known-limitations))
-- Python 3.10+
-- [ffmpeg](https://ffmpeg.org/) on `PATH` (`winget install Gyan.FFmpeg`)
-- About 600 MB of disk for the CLIP weights, downloaded on first analysis
+- Windows 10 or 11, 64-bit
+- About 4 GB of free disk space for the app, more for the analysis cache
+- An AMD GPU is used for fast export; other computers fall back to the CPU automatically (slower)
 
-## Run
+---
+
+## For developers
+
+Run from source:
 
 ```bash
 python -m venv .venv
@@ -24,31 +47,24 @@ python -m venv .venv
 .venv\Scripts\python editor.py [recording-or-project]
 ```
 
-On Windows you can also double-click `run.bat` or drag a recording onto it.
-The first analysis of a recording is slow; results are cached and reopening is instant.
+You also need [ffmpeg](https://ffmpeg.org/) on `PATH` (`winget install Gyan.FFmpeg`); the CLIP weights (~600 MB)
+download on the first analysis. Run the tests with `python auto_editor.py --selftest`.
 
-## Train on your own style (optional)
-
-Put videos you've already edited in `%APPDATA%\ClutchClip\training`, then drag one or more *raw* recordings onto
-`train.bat` (or run `python auto_editor.py --train raw1.mkv raw2.mkv`). The editor uses the resulting model automatically.
-
-## Where your data lives
-
-Everything user-specific is in `%APPDATA%\ClutchClip` (override with the `CLUTCHCLIP_HOME` environment variable):
-`cache/`, `moments.json`, `shortcuts.json`, `style_model.npz`, `training/`.
-Projects are saved as `.aeproj` files wherever you choose.
-
-## Development
+Build the Windows app:
 
 ```bash
-python auto_editor.py --selftest
+.venv\Scripts\pip install pyinstaller
+.venv\Scripts\python build.py --zip
 ```
 
-## Known limitations
+This creates `dist/ClutchClip/ClutchClip.exe` and `dist/ClutchClip-windows.zip`, bundling ffmpeg and the CLIP weights.
+`python make_logo.py` redraws the logo and icon in `assets/`. Set `CLUTCHCLIP_HOME` to move the per-user data folder.
 
-- Export uses an AMD hardware encoder (`h264_amf`) and falls back to CPU x264; decoding assumes Direct3D 11 (Windows).
+### Known limitations
+
+- Windows only; export prefers an AMD hardware encoder (`h264_amf`) and decoding assumes Direct3D 11.
 - Moment prompts are tuned for *The Finals*.
 
 ## License
 
-MIT. Not affiliated with Embark Studios or *The Finals*.
+MIT. Bundled third-party software is listed in [THIRD_PARTY.md](THIRD_PARTY.md). Not affiliated with Embark Studios or *The Finals*.
