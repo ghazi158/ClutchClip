@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAGE = os.path.join(HERE, "build_assets")
@@ -31,6 +32,17 @@ def torchvision_binaries():
             for a in ("--add-binary", f"{f}{os.pathsep}torchvision")]
 
 
+def clean_dist():
+    """Clear the old build. Windows refuses while ClutchClip.exe runs (or is still being released), so retry briefly."""
+    out = os.path.join(HERE, "dist", "ClutchClip")
+    for _ in range(30):
+        try:
+            return shutil.rmtree(out, ignore_errors=False) if os.path.exists(out) else None
+        except PermissionError:
+            time.sleep(1)
+    sys.exit("Can't clear dist/ClutchClip: close ClutchClip.exe and try again.")
+
+
 def build():
     sep = os.pathsep
     subprocess.run([
@@ -49,6 +61,7 @@ def build():
 
 
 if __name__ == "__main__":
+    clean_dist()
     stage()
     build()
     if "--zip" in sys.argv:
