@@ -1,4 +1,4 @@
-"""Auto Editor: AI-assisted editor for The Finals recordings."""
+"""ClutchClip: AI-assisted editor for The Finals recordings."""
 import copy
 import json
 import os
@@ -947,7 +947,7 @@ class Editor(QMainWindow):
         self.seq.update()
         self.update_time()
         name = os.path.basename(self.path or (self.project["source"] if self.project else ""))
-        self.setWindowTitle(f"Auto Editor{' - ' + name if name else ''}{' *' if self.dirty else ''}")
+        self.setWindowTitle(f"ClutchClip{' - ' + name if name else ''}{' *' if self.dirty else ''}")
         if not self.project:
             self.status_label.setText("Open a recording to start.")
             return

@@ -61,9 +61,9 @@ MOMENT_MERGE_GAP = 10  # detections closer than this are one moment (a round int
 FRAME_W, FRAME_H = 398, 224  # 16:9; CLIP's preprocess center-crops to the crosshair area
 MERGE_GAP, MIN_LEN, PAD_BEFORE, PAD_AFTER, SMOOTH = 8, 5, 3, 3, 5  # seconds
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-# per-user state (cache, settings, trained model, training videos); AUTO_EDITOR_HOME overrides it
-APP_DIR = os.environ.get("AUTO_EDITOR_HOME") or os.path.join(
-    os.environ.get("APPDATA") or os.path.expanduser("~/.local/share"), "AutoEditor")
+# per-user state (cache, settings, trained model, training videos); CLUTCHCLIP_HOME overrides it
+APP_DIR = os.environ.get("CLUTCHCLIP_HOME") or os.path.join(
+    os.environ.get("APPDATA") or os.path.expanduser("~/.local/share"), "ClutchClip")
 CACHE_DIR = os.path.join(APP_DIR, "cache")
 TRAIN_DIR = os.path.join(APP_DIR, "training")
 STYLE_MODEL = os.path.join(APP_DIR, "style_model.npz")

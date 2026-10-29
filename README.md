@@ -1,4 +1,4 @@
-# Auto Editor
+# ClutchClip
 
 AI-assisted video editor that turns a long gameplay recording into a highlight reel. Built around
 *The Finals* recordings, but the detection is prompt-based, so you can teach it other moments.
@@ -29,12 +29,12 @@ The first analysis of a recording is slow; results are cached and reopening is i
 
 ## Train on your own style (optional)
 
-Put videos you've already edited in `%APPDATA%\AutoEditor\training`, then drag one or more *raw* recordings onto
+Put videos you've already edited in `%APPDATA%\ClutchClip\training`, then drag one or more *raw* recordings onto
 `train.bat` (or run `python auto_editor.py --train raw1.mkv raw2.mkv`). The editor uses the resulting model automatically.
 
 ## Where your data lives
 
-Everything user-specific is in `%APPDATA%\AutoEditor` (override with the `AUTO_EDITOR_HOME` environment variable):
+Everything user-specific is in `%APPDATA%\ClutchClip` (override with the `CLUTCHCLIP_HOME` environment variable):
 `cache/`, `moments.json`, `shortcuts.json`, `style_model.npz`, `training/`.
 Projects are saved as `.aeproj` files wherever you choose.
 
