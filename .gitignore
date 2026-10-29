@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.aeproj
+*.autosave
+*.npy
+*.npz
