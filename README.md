@@ -58,7 +58,7 @@ Build the Windows app:
 ```
 
 This creates `dist/ClutchClip/ClutchClip.exe` and `dist/ClutchClip-windows.zip`, bundling ffmpeg and the CLIP weights.
-`python make_logo.py` redraws the logo and icon in `assets/`. Set `CLUTCHCLIP_HOME` to move the per-user data folder.
+Set `CLUTCHCLIP_HOME` to move the per-user data folder.
 
 ### Known limitations
 

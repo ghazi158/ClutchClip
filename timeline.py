@@ -2,13 +2,13 @@
 import math
 import os
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QMenu, QWidget
 
 import auto_editor as ae
 
-BG, LANE, GRID, TEXT = QColor("#121417"), QColor("#181b1f"), QColor("#2a2e34"), QColor("#8b919b")
+BG, LANE, TEXT = QColor("#121417"), QColor("#181b1f"), QColor("#8b919b")
 ACCENT, GREEN, RED, MUSIC = QColor("#8b5cf6"), QColor("#22c55e"), QColor("#ef4444"), QColor("#3b82f6")
 RULER, EDGE, SNAP_PX = 20, 6, 8
 
@@ -42,7 +42,6 @@ def ts(t):
 
 class TimeView(QWidget):
     """Shared zoom/scroll/ruler/playhead for both timelines. Subclasses define length() and playhead()."""
-    seek = Signal(float)
 
     def __init__(self, editor, height):
         super().__init__()
