@@ -26,6 +26,10 @@ That's it. There's nothing else to install and no internet connection is needed.
 Open **Moments** (right panel) to tell the AI to also keep deaths, round starts or cashouts, cut menus and scoreboards,
 or add your own by describing what appears on screen.
 
+**Playing something other than *The Finals*?** Everything in Moments can be edited or removed, including the main
+**Fights** detector: click **Edit**, then describe what the action looks like in your game and what isn't worth keeping
+(menus, loading screens). Delete it if you only want your own moments; **Restore** brings it back.
+
 Everything ClutchClip saves about you (analysis cache and settings) is in `%APPDATA%\ClutchClip`.
 Your projects (`.aeproj`) are saved wherever you choose.
 

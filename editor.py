@@ -106,8 +106,15 @@ class MomentsPanel(QScrollArea):
     def refresh(self):
         while self.rows.count():
             self.rows.takeAt(0).widget().deleteLater()
-        self.rows.addWidget(self.row("Fights", "Set how much with the AI keep slider", self.ed.fights_on,
-                                     self.ed.set_fights, "include"))
+        f = self.ed.fights
+        if f["deleted"]:
+            restore = QPushButton(f"Restore \"{ae.DEFAULT_FIGHTS['name']}\"", objectName="small")
+            restore.setFocusPolicy(Qt.NoFocus)
+            restore.clicked.connect(self.ed.restore_fights)
+            self.rows.addWidget(restore)
+        else:
+            self.rows.addWidget(self.row(f["name"], "Set how much with the AI keep slider", f["enabled"],
+                                         self.ed.set_fights, "include", self.ed.edit_fights, self.ed.delete_fights))
         for i, m in enumerate(self.ed.moments):
             n = self.ed.found[i] if i < len(self.ed.found) else None
             found = "…" if n is None and self.ed.project else f"{n} found" if n is not None else "–"
@@ -214,6 +221,61 @@ class MomentDialog(QDialog):
                 "prompts": [p.strip() for p in self.prompts.toPlainText().splitlines() if p.strip()]}
 
 
+class FightsDialog(QDialog):
+    """Edit what the main highlight detector looks for: what the action looks like, and what's not worth keeping."""
+
+    @classmethod
+    def ask(cls, parent, fights):
+        dlg = cls(parent, fights)
+        return dlg.result_fights() if dlg.exec() == QDialog.Accepted else None
+
+    def __init__(self, parent, f):
+        super().__init__(parent)
+        self.f = f
+        self.setWindowTitle(f"Edit {f['name']}")
+        self.resize(520, 0)
+        form = QFormLayout(self)
+        self.name = QLineEdit(f["name"])
+        self.highlight = QPlainTextEdit("\n".join(f["highlight"]))
+        self.boring = QPlainTextEdit("\n".join(f["boring"]))
+        for box in (self.highlight, self.boring):
+            box.setFixedHeight(110)
+        self.highlight.setPlaceholderText("Describe the action you want to keep, one description per line, e.g.\n"
+                                          "a car chase with explosions in a racing game")
+        self.boring.setPlaceholderText("Describe what's NOT worth keeping, one per line, e.g.\n"
+                                       "a game menu or loading screen")
+        form.addRow(QLabel("The AI compares every second of your video with these descriptions. Use a few of each. "
+                           "It also listens: loud, bursty audio scores higher.", objectName="muted", wordWrap=True))
+        form.addRow("Name", self.name)
+        form.addRow("The action looks like", self.highlight)
+        form.addRow("Not worth keeping", self.boring)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
+        buttons.button(QDialogButtonBox.RestoreDefaults).clicked.connect(self.restore)
+        buttons.accepted.connect(self.check)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def restore(self):
+        d = ae.DEFAULT_FIGHTS
+        self.name.setText(d["name"])
+        self.highlight.setPlainText("\n".join(d["highlight"]))
+        self.boring.setPlainText("\n".join(d["boring"]))
+
+    def lines(self, box):
+        return [p.strip() for p in box.toPlainText().splitlines() if p.strip()]
+
+    def check(self):
+        if not (self.name.text().strip() and self.lines(self.highlight) and self.lines(self.boring)):
+            QMessageBox.warning(self, "Missing info", "Give it a name and at least one description in each box "
+                                "(the AI needs both to tell the action from the boring parts).")
+            return
+        self.accept()
+
+    def result_fights(self):
+        return {**self.f, "name": self.name.text().strip(), "highlight": self.lines(self.highlight),
+                "boring": self.lines(self.boring)}
+
+
 class Bridge(QObject):
     progress = Signal(float)
     done = Signal(object)
@@ -254,10 +316,13 @@ class Editor(QMainWindow):
         try:
             with open(MOMENTS_FILE) as f:
                 saved = json.load(f)
-            self.fights_on, self.moments = saved["fights"], saved["moments"]
+            self.moments, fights = saved["moments"], saved["fights"]
+            # older files stored just on/off for fights
+            self.fights = {**copy.deepcopy(ae.DEFAULT_FIGHTS),
+                           **(fights if isinstance(fights, dict) else {"enabled": fights})}
         except (OSError, ValueError, KeyError):
-            self.fights_on, self.moments = True, copy.deepcopy(ae.DEFAULT_MOMENTS)
-        self.found, self.ai_gen = [None] * len(self.moments), 0
+            self.fights, self.moments = copy.deepcopy(ae.DEFAULT_FIGHTS), copy.deepcopy(ae.DEFAULT_MOMENTS)
+        self.found, self.ai_gen, self.analysis_gen = [None] * len(self.moments), 0, 0
 
         self.player, self.audio = QMediaPlayer(), QAudioOutput()
         self.player.setAudioOutput(self.audio)
@@ -293,7 +358,7 @@ class Editor(QMainWindow):
         self.keep_label = QLabel("30%", fixedWidth=36)
         self.keep.valueChanged.connect(lambda v: self.keep_label.setText(f"{v}%"))
         self.keep.sliderReleased.connect(self.resuggest_ai)
-        self.keep.setEnabled(self.fights_on)
+        self.keep.setEnabled(self.fights_active())
         tb.addWidget(self.keep)
         tb.addWidget(self.keep_label)
         tb.addWidget(self.button("Accept all", self.accept_all))
@@ -500,15 +565,19 @@ class Editor(QMainWindow):
         self.start_analysis()
         QTimer.singleShot(0, self.fit)
 
-    def start_analysis(self):
+    def start_analysis(self, apply=False):
+        """Score the recording. A fresh project gets AI suggestions filled in; a reopened one just counts moments
+        (apply=True also swaps in new suggestions, for when the fight descriptions changed)."""
         self.score, self.analyzing = None, 0.0
-        src = self.project["source"]
+        self.analysis_gen += 1
+        gen, src = self.analysis_gen, self.project["source"]
+        highlight, boring = list(self.fights["highlight"]), list(self.fights["boring"])
 
         def done(score):
-            if self.project and self.project["source"] == src:
+            if gen == self.analysis_gen and self.project and self.project["source"] == src:
                 self.score, self.analyzing = score, None
-                # fresh project: fill in the AI suggestions; reopened one: just count the moments
-                self.resuggest_ai(apply=not self.project["clips"], fresh=not self.project["clips"])
+                fresh = not self.project["clips"]
+                self.resuggest_ai(apply=apply or fresh, fresh=fresh)
                 self.fit()
 
         def failed(msg):
@@ -516,7 +585,7 @@ class Editor(QMainWindow):
             QMessageBox.warning(self, "AI analysis failed", msg)
             self.refresh()
 
-        self.jobs.append(in_thread(lambda prog: ae.analyze(src, prog),
+        self.jobs.append(in_thread(lambda prog: ae.analyze(src, prog, highlight, boring),
                                    lambda p: (setattr(self, "analyzing", p), self.refresh()), done, failed))
 
     def save(self):
@@ -665,7 +734,8 @@ class Editor(QMainWindow):
             return
         self.ai_gen += 1
         gen, src, score, dur = self.ai_gen, self.project["source"], self.score, self.duration
-        keep, moments, fights = self.keep.value(), copy.deepcopy(self.moments), self.fights_on
+        keep, moments = self.keep.value(), copy.deepcopy(self.moments)
+        fights = copy.deepcopy(self.fights) if self.fights_active() else None
         self.statusBar().showMessage("AI is updating suggestions... (first time takes a few seconds)")
 
         def done(result):
@@ -693,16 +763,45 @@ class Editor(QMainWindow):
         self.jobs.append(in_thread(lambda _: ae.ai_ranges(src, score, dur, keep, moments, fights),
                                    lambda p: None, done, failed))
 
-    def save_moments(self):
+    def fights_active(self):
+        return self.fights["enabled"] and not self.fights["deleted"]
+
+    def write_moments(self):
         with open(MOMENTS_FILE, "w") as f:
-            json.dump({"fights": self.fights_on, "moments": self.moments}, f, indent=1)
-        self.keep.setEnabled(self.fights_on)
+            json.dump({"fights": self.fights, "moments": self.moments}, f, indent=1)
+        self.keep.setEnabled(self.fights_active())
         self.moments_panel.refresh()
+
+    def save_moments(self):
+        self.write_moments()
         self.resuggest_ai()
 
     def set_fights(self, on):
-        self.fights_on = on
+        self.fights["enabled"] = on
         self.save_moments()
+
+    def update_fights(self, new):
+        """Apply new fight settings; changed descriptions mean scoring the recording again (cheap: frames are cached)."""
+        changed = (new["highlight"], new["boring"]) != (self.fights["highlight"], self.fights["boring"])
+        self.fights = new
+        if changed and self.project:
+            self.write_moments()
+            self.start_analysis(apply=True)
+        else:
+            self.save_moments()
+
+    def edit_fights(self):
+        f = FightsDialog.ask(self, self.fights)
+        if f is not None:
+            self.update_fights(f)
+
+    def delete_fights(self):
+        if QMessageBox.question(self, "Remove",
+                                f"Remove \"{self.fights['name']}\"? You can restore it later.") == QMessageBox.Yes:
+            self.update_fights({**self.fights, "enabled": False, "deleted": True})
+
+    def restore_fights(self):
+        self.update_fights(copy.deepcopy(ae.DEFAULT_FIGHTS))
 
     def edit_moment(self, i=None):
         m = MomentDialog.ask(self, self.moments[i] if i is not None else None)

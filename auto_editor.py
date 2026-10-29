@@ -1,6 +1,7 @@
 """Backend for the editor: AI scoring of a recording, timeline edit operations, and export."""
 import functools
 import glob
+import hashlib
 import os
 import queue
 import shutil
@@ -27,6 +28,9 @@ BORING_PROMPTS = [
     "spectating another player while dead",
     "a calm first-person view of a building with no enemies",
 ]
+# the main "what's worth keeping" detector, shown as the first row in the Moments panel; its keep % is the toolbar slider
+DEFAULT_FIGHTS = {"name": "Fights", "enabled": True, "deleted": False,
+                  "highlight": FIGHT_PROMPTS, "boring": BORING_PROMPTS}
 # mode include/exclude; keep `before` s of lead-in, up to `during` s of the moment itself (-1 = all), `after` s after it
 DEFAULT_MOMENTS = [
     {"name": "Deaths, team wipes & respawn", "mode": "include", "enabled": False, "sensitivity": 50,
@@ -208,17 +212,17 @@ def clip_embeddings(video, progress=lambda p: None):
     return scan(video, progress)[0]
 
 
-def vision_scores(video, seconds, progress):
+def vision_scores(video, seconds, progress, highlight, boring):
     emb = clip_embeddings(video, progress)
     import open_clip
     import torch
     model, _ = load_clip()
     with torch.no_grad():
-        text = model.encode_text(open_clip.get_tokenizer("ViT-B-32")(FIGHT_PROMPTS + BORING_PROMPTS))
+        text = model.encode_text(open_clip.get_tokenizer("ViT-B-32")(highlight + boring))
     text = (text / text.norm(dim=-1, keepdim=True)).numpy()
     logits = 100 * emb @ text.T
     probs = np.exp(logits - logits.max(axis=1, keepdims=True))
-    s = probs[:, : len(FIGHT_PROMPTS)].sum(axis=1) / probs.sum(axis=1)
+    s = probs[:, : len(highlight)].sum(axis=1) / probs.sum(axis=1)
     return np.concatenate([s, np.zeros(seconds)])[:seconds]
 
 
@@ -289,10 +293,10 @@ def subtract(ranges, cuts):
     return ranges
 
 
-def ai_ranges(video, score, duration, keep_percent, moments, fights=True):
-    """AI suggestions as (start, end, why): fights (keep %) plus enabled include-moments, minus
-    enabled exclude-moments. Also returns how many times each moment was found (enabled or not)."""
-    ranges = [(s, e, {"Fight"}) for s, e in suggest(score, duration, keep_percent)] if fights else []
+def ai_ranges(video, score, duration, keep_percent, moments, fights=None):
+    """AI suggestions as (start, end, why): the main highlights (`fights` settings, keep %) plus enabled
+    include-moments, minus enabled exclude-moments. Also returns how many times each moment was found."""
+    ranges = [(s, e, {fights["name"]}) for s, e in suggest(score, duration, keep_percent)] if fights else []
     cuts, found = [], []
     emb = clip_embeddings(video) if moments else None
     competing = [p for m in moments for p in m["prompts"]]
@@ -337,9 +341,10 @@ def find_segments(keep, duration):
     return out
 
 
-def analyze(video, progress=lambda p: None):
-    """Smoothed per-second AI keep score (~0..1) for the whole recording, cached in ./cache."""
-    cache = os.path.join(CACHE_DIR, f"{os.path.basename(video)}_{os.path.getsize(video)}_score.npy")
+def analyze(video, progress=lambda p: None, highlight=FIGHT_PROMPTS, boring=BORING_PROMPTS):
+    """Smoothed per-second AI keep score (~0..1) for the whole recording, cached per set of prompts."""
+    key = hashlib.md5("\n".join(highlight + ["|"] + boring).encode()).hexdigest()[:8]
+    cache = os.path.join(CACHE_DIR, f"{os.path.basename(video)}_{os.path.getsize(video)}_{key}_score.npy")
     if os.path.exists(cache):
         return np.load(cache)
     seconds = int(duration_of(video))
@@ -353,7 +358,7 @@ def analyze(video, progress=lambda p: None):
         else:
             scan(video, progress)
     audio = np.load(cache_path(video, "_audio"))
-    vision = vision_scores(video, seconds, progress)
+    vision = vision_scores(video, seconds, progress, highlight, boring)
     score = 0.5 * audio + 0.5 * vision
     score = np.convolve(score, np.ones(SMOOTH) / SMOOTH, mode="same")
     np.save(cache, score)
