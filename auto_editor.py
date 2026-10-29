@@ -80,6 +80,10 @@ def find_tool(name):
     return path
 
 
+class Cancelled(RuntimeError):
+    """The user cancelled an export."""
+
+
 class FFmpegError(subprocess.CalledProcessError):
     """Still a CalledProcessError (callers fall back on it), but the message says what ffmpeg complained about."""
 
@@ -87,13 +91,23 @@ class FFmpegError(subprocess.CalledProcessError):
         return f"{os.path.basename(self.cmd[0])} failed: {(self.stderr or b'').decode(errors='replace')[-500:].strip()}"
 
 
-def run(args, **kw):
+def run(args, cancel=lambda: False):
+    """Run a tool to completion and return its CompletedProcess. If cancel() turns true the process is killed."""
     # stdin=DEVNULL: a windowed .exe has no console stdin to inherit, which makes Popen fail with "invalid handle"
-    try:
-        return subprocess.run(args, check=True, capture_output=True, stdin=subprocess.DEVNULL,
-                              creationflags=NO_WINDOW, **kw)
-    except subprocess.CalledProcessError as e:
-        raise FFmpegError(e.returncode, e.cmd, e.output, e.stderr) from None
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=NO_WINDOW)
+    while True:
+        try:
+            out, err = proc.communicate(timeout=0.25)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel():
+                proc.kill()
+                proc.communicate()
+                raise Cancelled("Export cancelled.") from None
+    if proc.returncode:
+        raise FFmpegError(proc.returncode, args, out, err)
+    return subprocess.CompletedProcess(args, 0, out, err)
 
 
 def duration_of(video):
@@ -454,14 +468,15 @@ def render(project, out, settings, progress=lambda p: None, cancel=lambda: False
     music = project["music"]
     height, fps = settings.get("height") or src_h, settings.get("fps") or src_fps
     total, done, state = seq_length(clips), [0.0], {"enc": settings.get("encoder", "h264_amf")}
+    used = {}  # part number -> encoder that made it
     audio = ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"]
 
-    def cut(n, c, part):
+    def cut(n, c, part, force=None):
         head = [ffmpeg, "-y", "-v", "error"]
         span = ["-ss", f"{c['in']:.3f}", "-i", src, "-t", f"{c['out'] - c['in']:.3f}", "-map", "0:v:0", "-map", "0:a:0?"]
         tail = ["-af", f"volume={c['volume']:.3f}", *audio, part]
         while True:
-            enc = state["enc"]
+            enc = force or state["enc"]
             vf = [f"fps={fps}"] if fps != src_fps else []
             if enc == "h264_amf" and height == src_h:  # decode -> encode without leaving the GPU
                 cmd = [*head, "-hwaccel", "d3d11va", "-hwaccel_output_format", "d3d11", *span,
@@ -470,7 +485,9 @@ def render(project, out, settings, progress=lambda p: None, cancel=lambda: False
                 cmd = [*head, "-hwaccel", "d3d11va", *span,
                        "-vf", ",".join(vf + [f"scale=-2:{height}", "format=yuv420p"])]
             try:
-                return run([*cmd, *encoder_args(enc, video_mbps(settings["size"], height, fps)), *tail])
+                run([*cmd, *encoder_args(enc, video_mbps(settings["size"], height, fps)), *tail], cancel)
+                used[n] = enc
+                return
             except subprocess.CalledProcessError:
                 if enc == "libx264":
                     raise
@@ -481,7 +498,7 @@ def render(project, out, settings, progress=lambda p: None, cancel=lambda: False
 
         def job(n):
             if cancel():
-                raise RuntimeError("Export cancelled.")
+                raise Cancelled("Export cancelled.")
             cut(n, clips[n], parts[n])
             done[0] += clips[n]["out"] - clips[n]["in"]
             progress(0.95 * done[0] / total)
@@ -489,19 +506,22 @@ def render(project, out, settings, progress=lambda p: None, cancel=lambda: False
         # 2 clips at a time keeps the GPU decoder busy while the other clip seeks on the drive
         with ThreadPoolExecutor(2) as pool:
             list(pool.map(job, range(len(clips))))
+        if len(set(used.values())) > 1:  # the GPU encoder failed midway: joining mixed encodes can break, so redo them
+            for n in [n for n, enc in used.items() if enc != "libx264"]:
+                cut(n, clips[n], parts[n], force="libx264")
 
         listfile = os.path.join(tmp, "list.txt")
         with open(listfile, "w") as f:
             f.writelines(f"file '{os.path.basename(p)}'\n" for p in parts)
         joined = os.path.join(tmp, "joined.mp4")
-        run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", listfile, "-c", "copy", joined])
+        run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", listfile, "-c", "copy", joined], cancel)
         if music:
             inputs = [x for m in music for x in ("-i", m["path"])]
             run([ffmpeg, "-y", "-v", "error", "-i", joined, *inputs,
                  "-filter_complex", music_filter(music), "-map", "0:v", "-map", "[a]",
-                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out])
+                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out], cancel)
         else:
-            run([ffmpeg, "-y", "-v", "error", "-i", joined, "-c", "copy", "-movflags", "+faststart", out])
+            run([ffmpeg, "-y", "-v", "error", "-i", joined, "-c", "copy", "-movflags", "+faststart", out], cancel)
     progress(1)
 
 

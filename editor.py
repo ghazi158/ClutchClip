@@ -230,6 +230,8 @@ def in_thread(fn, on_progress, on_done, on_fail):
     def work():
         try:
             b.done.emit(fn(b.progress.emit))
+        except ae.Cancelled as e:
+            b.failed.emit(str(e))
         except Exception as e:
             with open(LOG_FILE, "a") as f:  # a windowed .exe has no console, so keep the traceback for bug reports
                 f.write(f"{time.ctime()}\n{traceback.format_exc()}\n")
@@ -1067,7 +1069,10 @@ class Editor(QMainWindow):
 
         def failed(msg):
             self.export_ui(False)
-            QMessageBox.warning(self, "Export failed", msg)
+            if cancel["cancel"]:
+                self.statusBar().showMessage("Export cancelled", 5000)
+            else:
+                QMessageBox.warning(self, "Export failed", msg)
 
         self.export_ui(True)
         self.jobs.append(in_thread(lambda prog: ae.render(project, path, settings, prog, lambda: cancel["cancel"]),
